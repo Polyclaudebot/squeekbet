@@ -1,0 +1,14 @@
+# build outputs / deps
+out/
+cache/
+lib/
+build/node_modules/
+build/viem.js
+# local-only material
+build/ref/
+build/qa/*.png
+deploy/caddy_data/
+deploy/caddy_config/
+.env*
+*.key
+*.pem

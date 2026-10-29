@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SqueekBet</title>
+<link rel="stylesheet" href="fonts.css">
+<style>
+:root{
+  --page:#d3d4db;--card:#f6f6f8;--card-2:#ffffff;--line:#e1e1e7;--line-2:#cfd0d8;
+  --text:#18181c;--text-2:#4a4a53;--mut:#7a7a84;
+  --blue:#4a5fd0;--blue-soft:#eceffd;--amber:#d98a17;--amber-soft:#fdf3dc;--brown:#9a5512;
+  --yes:#4a5fd0;--yes-soft:#eceffd;--no:#d4691a;--no-soft:#fdeee2;--acc:#d98a17;
+  --led-bg:#0c0c0e;--led-dot:#1f1f23;--led-amber:#f7b941;--led-cream:#fff1b6;--led-dim:#6f6f78;--led-blue:#6176ea;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --cond:"Barlow Condensed","Arial Narrow",sans-serif;
+  --dots:"Doto",var(--mono);
+  --r:12px;--r-s:6px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--page);color:var(--text);font:14px/1.6 var(--mono);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:16px 16px 56px}
+a{color:inherit;text-decoration:none}
+.hidden{display:none!important}
+.label{font-size:11px;font-weight:500;letter-spacing:.2em;text-transform:uppercase;color:var(--text-2)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r)}
+
+/* nav */
+.nav{display:flex;align-items:center;gap:28px;padding:12px 18px;margin-bottom:16px}
+.brand{font-family:var(--dots);font-weight:900;font-size:30px;line-height:1;letter-spacing:.02em}
+.brand b{color:var(--amber);font-weight:900}.brand span{color:var(--blue)}
+.nav-links{display:flex;gap:22px;flex:1}
+.nav-links a{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--text-2)}
+.nav-links a:hover{color:var(--text)}
+.nav-right{display:flex;align-items:center;gap:14px}
+.bal{font-size:12px;letter-spacing:.06em;color:var(--brown);font-variant-numeric:tabular-nums}
+
+/* buttons */
+.btn{font:500 12px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;border-radius:var(--r-s);padding:13px 18px;border:1px solid var(--line-2);background:var(--card-2);color:var(--text);cursor:pointer;transition:filter .15s,transform .05s;white-space:nowrap}
+.btn:hover{filter:brightness(1.06)}.btn:active{transform:translateY(1px)}.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.primary,.btn.acc{background:var(--amber);border-color:var(--amber);color:#fff}
+.btn.yes{background:var(--yes);border-color:var(--yes);color:#fff}
+.btn.no{background:var(--no);border-color:var(--no);color:#fff}
+.btn.sm{padding:10px 14px}
+
+/* hero */
+.hero{display:grid;grid-template-columns:1fr 1.08fr;gap:16px;margin-bottom:16px}
+.pitch{padding:40px 40px 34px;display:flex;flex-direction:column;justify-content:center;
+  background:radial-gradient(ellipse at 0% 0%,var(--amber-soft) 0,transparent 60%),radial-gradient(ellipse at 100% 100%,var(--blue-soft) 0,transparent 60%),var(--card)}
+.kicker{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--brown);margin-bottom:14px}
+h1{font-family:var(--cond);font-weight:700;font-size:clamp(40px,4.6vw,60px);line-height:.95;margin:0 0 18px;text-transform:uppercase}
+h1 span{color:var(--blue)}
+.pitch p{color:var(--text-2);margin:0 0 26px;max-width:44ch}
+.cta{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+.more{font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--text-2)}
+.more:hover{color:var(--text)}
+.fine{font-size:11px;color:var(--mut);margin:22px 0 0!important}
+
+/* LED board */
+.led{background-color:var(--led-bg);background-image:radial-gradient(circle,var(--led-dot) 1.15px,transparent 1.5px);background-size:6px 6px;
+  border-radius:var(--r);padding:26px 30px;font-family:var(--dots);font-weight:900;text-transform:uppercase;display:flex;flex-direction:column;min-height:380px}
+.led-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+.badge{background:var(--led-blue);color:#18237a;font-size:30px;line-height:1;padding:6px 10px 4px;border-radius:2px}
+.badge.live{background:var(--led-amber);color:#4d2b00;animation:blink 1.6s steps(2) infinite}
+@keyframes blink{50%{opacity:.72}}
+.led-link{font-family:var(--mono);font-weight:500;font-size:11px;letter-spacing:.2em;color:var(--led-cream);opacity:.85}
+.led-link:hover{opacity:1}
+.cam{margin-bottom:16px;padding:0;overflow:hidden}
+.cam-head{display:flex;justify-content:space-between;align-items:center;padding:12px 16px}
+.cam-frame{position:relative;aspect-ratio:16/9;background:var(--led-bg)}
+.cam-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.dm{display:block;line-height:1}
+.l-name{font-size:clamp(36px,4.2vw,54px)}
+.l-status{font-size:clamp(28px,3.2vw,40px);margin-top:6px}
+.l-rpm{font-size:24px;margin-top:6px;min-height:24px}
+.amber{color:var(--led-amber);text-shadow:0 0 10px rgba(247,185,65,.4)}
+.cream{color:var(--led-cream);text-shadow:0 0 10px rgba(255,241,182,.3)}
+.dim{color:var(--led-dim)}
+.blue{color:var(--led-blue);text-shadow:0 0 10px rgba(97,118,234,.35)}
+.led-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:auto;padding-top:22px;border-top:1px dashed #2a2a30}
+.led-stats span{font-size:clamp(20px,2.1vw,28px);display:block;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.led-stats small{font-family:var(--mono);font-weight:500;font-size:10px;letter-spacing:.18em;color:var(--led-dim)}
+
+/* notices */
+.notice{border-radius:var(--r);padding:12px 16px;font-size:12px;margin-bottom:16px}
+.warn{background:var(--amber-soft);border:1px solid #eed6a0;color:#6b4710}
+.danger{background:#fde6e3;border:1px solid #efaaa1;color:#861d12;font-weight:600}
+
+/* main grid */
+.main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+.panel-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line)}
+.tabs{display:flex;gap:4px;padding:0 12px;border-bottom:1px solid var(--line);overflow-x:auto}
+.tab{font:500 11px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--mut);background:none;border:0;border-bottom:2px solid transparent;padding:12px 8px;cursor:pointer;white-space:nowrap}
+.tab:hover{color:var(--text)}
+.tab.on{color:var(--text);border-bottom-color:var(--text)}
+#markets{padding:12px;display:flex;flex-direction:column;gap:12px}
+#markets > p{margin:8px;color:var(--mut)}
+#markets[data-tab="open"] .m:not([data-state="open"]),
+#markets[data-tab="live"] .m:not([data-state="live"]),
+#markets[data-tab="settled"] .m:not([data-state="settled"]){display:none}
+
+/* market card */
+.m{background:var(--card-2);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+.m[data-state="open"]{border-left:3px solid var(--amber)}
+.m-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.chip{font-size:10px;font-weight:500;letter-spacing:.18em;text-transform:uppercase;color:var(--brown);background:var(--amber-soft);padding:4px 8px;border-radius:4px}
+.chip.yes{color:var(--yes);background:var(--yes-soft)}.chip.no{color:var(--no);background:var(--no-soft)}
+.chip:not(.open):not(.yes):not(.no){color:var(--mut);background:#efeff3}
+.m-id{font-size:11px;color:var(--mut);letter-spacing:.1em}
+.q{font-family:var(--cond);font-weight:700;font-size:26px;line-height:1.05;text-transform:uppercase;margin:12px 0 4px}
+.m-meta{font-size:12px;color:var(--mut)}
+.m-meta b{color:var(--text);font-weight:600}
+.bar{height:6px;background:var(--no);border-radius:3px;overflow:hidden;margin:16px 0 12px}
+.bar i{display:block;height:100%;background:var(--yes)}
+.sides{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.side-box{border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.side-box.yes{background:var(--yes-soft);border-color:#d7ddfa}
+.side-box.no{background:var(--no-soft);border-color:#f6d9c3}
+.side-box.won{outline:2px solid currentColor}
+.side-box.yes.won{color:var(--yes)}.side-box.no.won{color:var(--no)}
+.side-top{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;letter-spacing:.18em;font-weight:600}
+.side-box.yes .side-top{color:var(--yes)}.side-box.no .side-top{color:var(--no)}
+.side-top b{font-family:var(--cond);font-size:26px;letter-spacing:0;line-height:1}
+.side-meta{font-size:11px;color:var(--text-2);margin-top:2px}
+.side-mine{font-size:11px;color:var(--text);font-weight:600;margin-top:4px}
+.m-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px}
+.amt{display:flex;align-items:center;border:1px solid var(--line-2);border-radius:var(--r-s);background:#fff;flex:1;min-width:140px}
+.amt input{border:0;background:none;width:100%;padding:11px 12px;font:14px var(--mono);color:var(--text);outline:none;min-width:0}
+.amt span{font-size:11px;letter-spacing:.14em;color:var(--mut);padding-right:12px}
+.amt:focus-within{border-color:var(--blue)}
+
+/* sidebar */
+.aside{display:flex;flex-direction:column;gap:16px}
+.box-body{padding:18px 20px}
+.field{display:block;font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--mut);margin-bottom:14px}
+.field input{display:block;width:100%;margin-top:6px;background:#fff;color:var(--text);border:1px solid var(--line-2);border-radius:var(--r-s);padding:11px 12px;font:14px var(--mono);letter-spacing:0;outline:none}
+.field input:focus{border-color:var(--blue)}
+.aside .btn{width:100%}
+#preview{font-size:11px;color:var(--mut);margin:12px 0 0;line-height:1.55}
+.checks{list-style:none;margin:0;padding:0}
+.checks li{position:relative;padding-left:22px;margin:0 0 10px;font-size:12px;color:var(--text-2);line-height:1.5}
+.checks li::before{content:"✓";position:absolute;left:0;top:0;color:var(--yes);font-weight:600}
+.contract{font-size:11px;color:var(--mut);border-top:1px solid var(--line);padding-top:12px;margin-top:4px}
+code{font-size:11px;word-break:break-all;color:var(--text-2)}
+.safe{color:var(--yes);font-weight:600}
+
+/* footer */
+.foot{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--mut);margin-top:28px;padding:0 6px}
+.foot a{margin-right:18px}.foot a:hover{color:var(--text)}
+#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--led-bg);color:var(--led-cream);font:12px var(--mono);letter-spacing:.06em;padding:12px 18px;border-radius:8px;display:none;max-width:92vw;z-index:9;box-shadow:0 8px 28px rgba(0,0,0,.28)}
+
+@media (max-width:980px){
+  .hero,.main{grid-template-columns:1fr}
+  .nav-links{display:none}
+}
+@media (max-width:560px){
+  .wrap{padding:12px 12px 48px}
+  .nav{gap:12px;padding:10px 12px}.brand{font-size:24px}
+  .pitch{padding:26px 20px}
+  .led{padding:20px;min-height:0}
+  .led-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .m{padding:16px}
+  .m-actions .btn{flex:1}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="card nav">
+    <a class="brand" href="#" aria-label="SqueekBet home"><b>SQUEEK</b><span>BET</span></a>
+    <div class="nav-links">
+      <a href="#markets-panel">Markets</a>
+      <a href="#how">How it works</a>
+      <a class="liveLink" href="https://x.com/i/broadcasts/1YGNrbweQeQGw" target="_blank" rel="noopener">Live</a>
+      <a href="https://discord.gg/C7fgAdh7M" target="_blank" rel="noopener">Discord</a>
+    </div>
+    <div class="nav-right">
+      <span class="bal" id="bal"></span>
+      <button class="btn primary sm" id="connect">Connect wallet</button>
+    </div>
+  </nav>
+
+  <div class="hero">
+    <section class="card pitch">
+      <div class="kicker">Prediction markets · Sepolia testnet</div>
+      <h1>Bet on the<br>hamster-powered<br><span>blockchain</span></h1>
+      <p>Will Squeektoshi mine enough blocks? Stake $SQK on YES or NO. The winners split the pool, and every result is settled onchain with no oracle.</p>
+      <div class="cta">
+        <a class="btn primary" href="#markets-panel">Browse markets</a>
+        <a class="more" href="#how">How it works →</a>
+      </div>
+      <p class="fine">Testnet $SQK only · community-built, not affiliated with Squeekchain</p>
+    </section>
+
+    <section class="led" aria-live="polite">
+      <div class="led-top">
+        <span class="badge" id="onair">OFF AIR</span>
+        <a class="led-link liveLink" href="https://x.com/i/broadcasts/1YGNrbweQeQGw" target="_blank" rel="noopener">WATCH LIVE →</a>
+      </div>
+      <span class="dm l-name amber">Squeektoshi</span>
+      <span class="dm l-status dim" id="wheel">…</span>
+      <span class="dm l-rpm cream" id="rpm"></span>
+      <div class="led-stats">
+        <div><span class="cream" id="height">…</span><small>BLOCK HEIGHT</small></div>
+        <div><span class="amber" id="rate">…</span><small>24H PACE</small></div>
+        <div><span class="blue" id="round">…</span><small>ROUND</small></div>
+        <div><span class="dim" id="settled">…</span><small>SETTLED</small></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card cam" aria-label="Squeektoshi livestream">
+    <div class="cam-head"><span class="label">Live wheel cam <span class="m-id" id="viewers"></span></span><a class="more liveLink" href="https://x.com/i/broadcasts/1YGNrbweQeQGw" target="_blank" rel="noopener">Open on X →</a></div>
+    <div class="cam-frame"><iframe id="cam" title="Squeektoshi livestream on X" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen
+      referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups" loading="eager"></iframe></div>
+  </section>
+
+  <div class="notice warn hidden" id="settleWarn"></div>
+  <div class="notice danger hidden" id="fakeWarn"></div>
+
+  <div class="main">
+    <section class="card" id="markets-panel">
+      <div class="panel-head"><span class="label">Markets</span><span class="m-id" id="mcount"></span></div>
+      <div class="tabs" role="tablist">
+        <button class="tab on" data-tab="all">All</button>
+        <button class="tab" data-tab="open">Open</button>
+        <button class="tab" data-tab="live">Live</button>
+        <button class="tab" data-tab="settled">Settled</button>
+      </div>
+      <div id="app" class="hidden"></div>
+      <div id="markets" data-tab="all"><p>Loading…</p></div>
+    </section>
+
+    <aside class="aside">
+      <section class="card hidden" id="createCard">
+        <div class="panel-head"><span class="label" id="sideTitle">Create a market</span></div>
+        <div class="box-body">
+          <div class="hidden" id="deployCard">
+            <p class="mut" style="margin:0 0 14px;font-size:12px">No contract is configured yet. Deploy SqueekBet on Sepolia with your wallet. You only need a little Sepolia ETH for gas. The deploying wallet becomes the only one that can open markets.</p>
+            <button class="btn primary" id="deploy">Deploy SqueekBet</button>
+            <p id="deployOut" class="mut" style="font-size:11px"></p>
+          </div>
+          <div class="hidden" id="createForm">
+            <label class="field">Starts in (minutes)<input id="fStart" type="number" min="1" value="30"></label>
+            <label class="field">Duration (hours)<input id="fHours" type="number" min="1" max="168" value="1"></label>
+            <label class="field">YES if blocks mined ≥<input id="fMin" type="number" min="1" value="1"></label>
+            <button class="btn primary" id="create">Create market</button>
+            <p id="preview"></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" id="how">
+        <div class="panel-head"><span class="label">Why it's safe</span></div>
+        <div class="box-body">
+          <ul class="checks">
+            <li>Betting closes when the window starts, so nobody can bet after watching the outcome.</li>
+            <li>Results come from SqueekCore's settled onchain data. Nobody picks the winner.</li>
+            <li>Only the SqueekBet team can open markets, and that is all they can do. Nobody can withdraw the pooled SQK, cancel a market or pick a winner.</li>
+            <li>If nobody takes the other side, every bettor gets their stake back.</li>
+            <li>If settlement stalls or breaks for 24 hours after a market ends, refunds unlock.</li>
+            <li>You only approve the exact amount you bet, and every transaction is simulated first.</li>
+          </ul>
+          <div class="contract">Testnet only, not audited yet.<br>Contract: <code id="addrOut">—</code> <span id="verified"></span></div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="foot">
+    <div>
+      <a class="liveLink" href="https://x.com/i/broadcasts/1YGNrbweQeQGw" target="_blank" rel="noopener">Live</a>
+      <a href="https://discord.gg/C7fgAdh7M" target="_blank" rel="noopener">Discord</a>
+      <a href="https://docs.squeekchain.com" target="_blank" rel="noopener">Docs</a>
+      <a href="https://docs.squeekchain.com/squeeks/minting/" target="_blank" rel="noopener">Get SQK</a>
+    </div>
+    <span>SqueekBet · community project</span>
+  </footer>
+</div>
+<div id="toast"></div>
+<script src="config.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

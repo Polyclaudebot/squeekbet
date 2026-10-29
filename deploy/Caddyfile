@@ -1,0 +1,16 @@
+{
+	email admin@squeekbet.xyz
+}
+
+www.squeekbet.xyz {
+	redir https://squeekbet.xyz{uri} permanent
+}
+
+squeekbet.xyz {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	reverse_proxy squeekbet-web:80
+}
