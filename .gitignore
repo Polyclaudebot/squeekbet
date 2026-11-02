@@ -17,3 +17,4 @@ backups/
 test-web/*.png
 test-web/seed.json
 test-web/dbg.py
+!web/lib/
