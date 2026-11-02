@@ -12,3 +12,8 @@ deploy/caddy_config/
 .env*
 *.key
 *.pem
+stage/
+backups/
+test-web/*.png
+test-web/seed.json
+test-web/dbg.py

@@ -1,12 +1,17 @@
-import { createPublicClient, createWalletClient, custom, http, parseEther, formatEther, parseAbi, keccak256, sepolia } from "./vendor/viem.js";
+import { createPublicClient, createWalletClient, custom, http, parseAbi, keccak256, sepolia } from "./vendor/viem.js";
 import { SQUEEKBET_ABI, SQUEEKBET_BYTECODE } from "./abi.js";
+import { GENESIS, ROUND, MIN_BET, STATUS, TABS, roundNow, roundStartTs, phaseOf, payoutIfWins, multiplier, progressOf, positionOf, summarize } from "./lib/market.js";
+import { now, esc, fmtTime, fmtDur, sqk, int, parseAmount } from "./lib/format.js";
 
+// ---------- config ----------
 const CORE = "0x980B4424c007CAf7a1f3670B48c8EaEf7EbC3d44";
 const SQK = "0x6872BfA5CcC3E9e440C6c16e5fFdAbb8DBA4Cc76";
 const API = "https://api.squeekchain.com/v1";
-const RPC = "https://ethereum-sepolia-rpc.publicnode.com";
-const GENESIS = 1793022600, ROUND = 600, UNITS = 1000000000n, TIMEOUT = 86400;
-const STORE_KEY = "squeekbet.v5.address";
+const CFG = window.SQUEEKBET || {};
+const RPC = CFG.rpc || "https://ethereum-sepolia-rpc.publicnode.com";
+const UNITS = 1000000000n;
+const MAX_MARKETS = 200; // newest markets loaded (multicall keeps this to a few RPC requests)
+const STORE_KEY = "squeekbet.v5.address", TAB_KEY = "squeekbet.tab";
 const CORE_ABI = parseAbi([
   "function state() view returns ((uint64 settledThroughRound, uint64 cumulativeWork, uint96 cumulativeBlockUnits, uint64 blockHeight, uint96 blockProgress, uint32 workPerThousandBlocks, uint256 authorizationNonce, bool paused))",
   "function roundPage(uint64 afterRound, uint64 throughRound, uint256 maxRecords) view returns ((uint64 certifiedThroughRound, (uint64 cumulativeWork, uint96 cumulativeBlockUnits, uint32 workPerThousandBlocks) start, (uint64 cumulativeWork, uint96 cumulativeBlockUnits, uint32 workPerThousandBlocks) end, (uint64 roundId, uint64 cumulativeWork, uint96 cumulativeBlockUnits, uint32 workPerThousandBlocks, bytes32 dataHash)[] rounds))",
@@ -25,38 +30,28 @@ const ERRORS = {
   BetTooSmall: "The minimum bet is 1 SQK.",
   NotSettled: "These rounds are not settled onchain yet.",
   TimeoutNotReached: "The refund timeout has not been reached yet.",
+  UseResolve: "This market can be resolved, so it must be resolved instead of refunded.",
   NothingToClaim: "There is nothing to claim.",
   NotMarketCreator: "Only the SqueekBet market creator can open markets.",
   AlreadyClaimed: "You already claimed this market.",
   TransferFailed: "The SQK transfer failed. Check your balance and approval.",
 };
 
+// ---------- state ----------
 const $ = (id) => document.getElementById(id);
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
 const pub = createPublicClient({ chain: sepolia, transport: http(RPC) });
-let wallet = null, account = null, settled = 0n, ratePerRound = null, trusted = false, creator = null;
-const CFG = window.SQUEEKBET || {};
+let wallet = null, account = null, creator = null, trusted = false, busy = false;
+let settled = 0n, ratePerRound = null;
 // The contract address only comes from config.js on this server (or this browser's own fresh deployment),
 // never from the URL, so a shared link cannot point users at a fake contract.
 let addr = CFG.address || store.get(STORE_KEY) || "";
+const view = { markets: [], loaded: false, error: "", tab: TABS.includes(store.get(TAB_KEY)) ? store.get(TAB_KEY) : "all" };
+const drafts = new Map(); // bet amounts being typed, kept across re-renders
 
-const now = () => Math.floor(Date.now() / 1000);
-const roundNow = () => (now() < GENESIS ? 0 : Math.floor((now() - GENESIS) / ROUND) + 1);
-const roundStartTs = (r) => GENESIS + (Number(r) - 1) * ROUND;
-function fmtTime(ts) {
-  const d = new Date(ts * 1000), t = new Date();
-  const hm = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-  return d.toDateString() === t.toDateString() ? hm : d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }) + ", " + hm;
-}
-function fmtDur(s) {
-  if (s <= 0) return "0m";
-  const h = Math.floor(s / 3600), m = Math.ceil((s % 3600) / 60);
-  return h ? `${h}h ${m}m` : `${m}m`;
-}
-const sqk = (v) => Number(formatEther(v)).toLocaleString("en-US", { maximumFractionDigits: 2 });
 function toast(msg, ms = 4000) {
   const t = $("toast"); t.textContent = msg; t.style.display = "block";
   clearTimeout(toast.h); toast.h = setTimeout(() => (t.style.display = "none"), ms);
@@ -65,7 +60,7 @@ function errMsg(e) {
   const s = (e && (e.shortMessage || e.message)) || String(e);
   for (const k in ERRORS) if (s.includes(k)) return ERRORS[k];
   if (/User rejected|denied/i.test(s)) return "You rejected the transaction.";
-  return s.split("\n")[0];
+  return s.split("\n")[0].slice(0, 200);
 }
 
 // ---------- live data ----------
@@ -85,22 +80,21 @@ async function loadLive() {
       w.classList.remove("hidden");
     } else w.classList.add("hidden");
   } catch { $("wheel").textContent = "no signal"; }
-  $("round").textContent = roundNow().toLocaleString("en-US");
+  $("round").textContent = int(roundNow(now()));
 }
 
 async function loadChain() {
   const st = await pub.readContract({ address: CORE, abi: CORE_ABI, functionName: "state" });
   settled = st.settledThroughRound;
-  $("height").textContent = Number(st.blockHeight).toLocaleString("en-US");
-  $("settled").textContent = Number(settled).toLocaleString("en-US");
-  // pace over the last 24h of settled rounds (or since genesis on a young chain), refreshed every poll
+  $("height").textContent = int(st.blockHeight);
+  $("settled").textContent = int(settled);
+  // pace over the last 24h of settled rounds (or since genesis on a young chain)
   if (settled >= 2n) {
     const span = settled > 144n ? 144n : settled - 1n;
     const pt = (r) => pub.readContract({ address: CORE, abi: CORE_ABI, functionName: "roundPage", args: [r, r, 0n] });
     const [a, b] = await Promise.all([pt(settled - span), pt(settled)]);
-    const blocks = Number(b.end.cumulativeBlockUnits - a.end.cumulativeBlockUnits) / Number(UNITS);
     const first = ratePerRound === null;
-    ratePerRound = blocks / Number(span);
+    ratePerRound = Number(b.end.cumulativeBlockUnits - a.end.cumulativeBlockUnits) / Number(UNITS) / Number(span);
     $("rate").textContent = `${Math.round(ratePerRound * 6)}/H`;
     if (first) suggestLine();
   }
@@ -132,61 +126,109 @@ async function verifyContract() {
 }
 
 // ---------- wallet ----------
-async function connect() {
-  if (!window.ethereum) { toast("Install MetaMask or another compatible wallet to bet."); return false; }
-  wallet = createWalletClient({ chain: sepolia, transport: custom(window.ethereum) });
-  [account] = await wallet.requestAddresses();
-  try { await wallet.switchChain({ id: sepolia.id }); }
-  catch { await wallet.addChain({ chain: sepolia }); }
-  $("connect").textContent = account.slice(0, 6) + "…" + account.slice(-4);
+function setAccount(a) {
+  account = a || null;
+  $("connect").textContent = account ? account.slice(0, 6) + "…" + account.slice(-4) : "Connect wallet";
+  if (!account) $("bal").textContent = "";
   updateCreatePanel();
-  loadBalance();
+  loadBalance().catch(() => {});
   loadMarkets();
+}
+
+async function connect(silent = false) {
+  if (!window.ethereum) { toast("Install MetaMask or another compatible wallet to bet."); return false; }
+  if (!wallet) {
+    wallet = createWalletClient({ chain: sepolia, transport: custom(window.ethereum) });
+    if (typeof window.ethereum.on === "function") {
+      window.ethereum.on("accountsChanged", (a) => setAccount(a && a[0]));
+      window.ethereum.on("chainChanged", () => location.reload());
+    }
+  }
+  const [a] = await wallet.requestAddresses();
+  if (!silent) await ensureChain(); // run() checks the chain again before any transaction
+  setAccount(a);
   return true;
 }
 
+// Every transaction goes to Sepolia: refuse to continue if the wallet stays on another chain.
+async function ensureChain() {
+  if ((await wallet.getChainId()) === sepolia.id) return;
+  try { await wallet.switchChain({ id: sepolia.id }); }
+  catch { await wallet.addChain({ chain: sepolia }); }
+  if ((await wallet.getChainId()) !== sepolia.id) throw new Error("Switch your wallet to Sepolia to continue.");
+}
+
 async function loadBalance() {
-  if (!account) return;
+  if (!account) return 0n;
   const b = await pub.readContract({ address: SQK, abi: ERC20_ABI, functionName: "balanceOf", args: [account] });
   $("bal").textContent = `${sqk(b)} SQK`;
   return b;
 }
 
+// Simulate first (catches reverts before the wallet prompt), then wait for the receipt and check it succeeded.
 async function tx(address, abi, functionName, args, label) {
   const { request } = await pub.simulateContract({ address, abi, functionName, args, account });
   const hash = await wallet.writeContract(request);
-  toast(`${label || "Transaction"} sent… ⏳`, 30000);
-  await pub.waitForTransactionReceipt({ hash });
+  toast(`${label} sent… ⏳`, 120000);
+  const r = await pub.waitForTransactionReceipt({ hash });
+  if (r.status !== "success") throw new Error(`${label} failed onchain (${hash.slice(0, 10)}…).`);
+  return r;
 }
 
-async function send(functionName, args) {
-  if (!trusted) return toast("Betting is disabled: this contract could not be verified.", 6000);
-  if (!account && !(await connect())) return;
+// One action at a time: no double submits, buttons are disabled while a transaction is pending.
+async function run(fn, { needsTrust = true } = {}) {
+  if (busy) return toast("Please wait: a transaction is already in progress.");
+  if (needsTrust && !trusted) return toast("Betting is disabled: this contract could not be verified.", 6000);
+  if (!account && !(await connect().catch((e) => { toast(errMsg(e)); return false; }))) return;
+  busy = true;
+  document.body.classList.add("busy");
+  render();
   try {
-    await tx(addr, SQUEEKBET_ABI, functionName, args);
-    toast("Confirmed ✅");
-    await Promise.all([loadMarkets(), loadBalance()]);
-  } catch (e) { toast(errMsg(e), 6000); }
+    await ensureChain();
+    await fn();
+  } catch (e) {
+    toast(errMsg(e), 6000);
+  } finally {
+    busy = false;
+    document.body.classList.remove("busy");
+    await Promise.all([loadMarkets(), loadBalance()]).catch(() => {});
+  }
 }
 
-async function placeBet(id, yes, amount) {
-  if (!trusted) return toast("Betting is disabled: this contract could not be verified.", 6000);
-  if (amount < 10n ** 18n) return toast("The minimum bet is 1 SQK.");
-  if (!account && !(await connect())) return;
+const send = (functionName, id, label) => run(async () => {
+  await tx(addr, SQUEEKBET_ABI, functionName, [id], label);
+  toast(`${label} confirmed ✅`);
+});
+
+const placeBet = (id, yes, amount) => run(async () => {
+  const bal = await loadBalance();
+  if (bal < amount) throw new Error(`Not enough SQK. You have ${sqk(bal)} SQK.`);
+  const allowance = await pub.readContract({ address: SQK, abi: ERC20_ABI, functionName: "allowance", args: [account, addr] });
+  if (allowance < amount) {
+    toast("Step 1/2: approve SQK…", 120000);
+    await tx(SQK, ERC20_ABI, "approve", [addr, amount], "Approval"); // exact amount, never unlimited
+  }
+  toast("Step 2/2: placing your bet…", 120000);
+  await tx(addr, SQUEEKBET_ABI, "bet", [id, yes, amount], "Bet");
+  drafts.delete(String(id));
+  toast(`Bet placed on ${yes ? "YES" : "NO"} ✅`);
+});
+
+// The contract has no batch claim: one transaction per market, each simulated, stopping at the first failure.
+const claimAll = () => run(async () => {
+  const ids = view.markets.filter((x) => x.pos && x.pos.state === "claimable").map((x) => x.id);
+  if (!ids.length) throw new Error("There is nothing to claim.");
+  let done = 0;
   try {
-    const bal = await loadBalance();
-    if (bal < amount) return toast(`Not enough SQK. You have ${sqk(bal)} SQK.`, 6000);
-    const allowance = await pub.readContract({ address: SQK, abi: ERC20_ABI, functionName: "allowance", args: [account, addr] });
-    if (allowance < amount) {
-      toast("Step 1/2: approve SQK…", 30000);
-      await tx(SQK, ERC20_ABI, "approve", [addr, amount], "Approval");
+    for (const id of ids) {
+      await tx(addr, SQUEEKBET_ABI, "claim", [id], `Claim ${done + 1}/${ids.length} (#${id})`);
+      done++;
     }
-    toast("Step 2/2: placing your bet…", 30000);
-    await tx(addr, SQUEEKBET_ABI, "bet", [id, yes, amount], "Bet");
-    toast(`Bet placed on ${yes ? "YES" : "NO"} ✅`);
-    await Promise.all([loadMarkets(), loadBalance()]);
-  } catch (e) { toast(errMsg(e), 6000); }
-}
+  } catch (e) {
+    throw new Error(`${done}/${ids.length} claimed. Stopped: ${errMsg(e)}`);
+  }
+  toast(`All ${done} claims confirmed ✅`);
+});
 
 async function deploy() {
   if (!account && !(await connect())) return;
@@ -201,77 +243,174 @@ async function deploy() {
   } catch (e) { toast(errMsg(e), 6000); }
 }
 
-// ---------- markets ----------
-function statusOf(m) {
-  const t = now(), start = roundStartTs(m.startRound), end = roundStartTs(m.endRound + 1n);
-  if (m.status === 1) return m.yesWon
-    ? { chip: "yes", text: `YES won · ${m.blocksMined} blocks mined` }
-    : { chip: "no", text: `NO won · ${m.blocksMined} blocks mined` };
-  if (m.status === 2) return { chip: "", text: `Refunding${m.blocksMined ? ` · ${m.blocksMined} blocks mined` : ""}` };
-  if (t < start) return { chip: "open", text: `Betting open · closes in ${fmtDur(start - t)}`, open: true };
-  if (settled >= m.endRound) return { chip: "open", text: "Ended · ready to resolve", resolve: true };
-  if (t >= end + TIMEOUT) return { chip: "", text: "Settlement stalled · refund available", refund: true };
-  if (t < end) return { chip: "open", text: `Live 🐹 · ends in ${fmtDur(end - t)}` };
-  return { chip: "", text: "Ended · waiting for onchain settlement" };
+// ---------- markets: data ----------
+async function multicall(calls) {
+  if (!calls.length) return [];
+  const res = await pub.multicall({ contracts: calls, allowFailure: true, batchSize: 8192 });
+  return res.map((r) => (r.status === "success" ? r.result : null));
 }
 
+let loadSeq = 0;
 async function loadMarkets() {
   if (!addr) return;
+  const seq = ++loadSeq, who = account, settledAt = settled;
+  const call = (functionName, args = []) => ({ address: addr, abi: SQUEEKBET_ABI, functionName, args });
   try {
-    const c = (fn, args = []) => pub.readContract({ address: addr, abi: SQUEEKBET_ABI, functionName: fn, args });
-    const count = Number(await c("marketCount"));
-    if (!count) { $("markets").innerHTML = '<p>No markets yet. New markets open soon. Follow the live stream!</p>'; return; }
+    const count = Number(await pub.readContract(call("marketCount")));
     const ids = [];
-    for (let i = count - 1; i >= Math.max(0, count - 30); i--) ids.push(BigInt(i));
-    const cards = await Promise.all(ids.map(async (id) => {
-      const m = await c("getMarket", [id]);
-      let progress = null, me = null;
-      if (m.status === 0 && settled >= m.startRound) {
-        progress = await c("blocksBetween", [m.startRound, settled < m.endRound ? settled : m.endRound]);
-      }
-      if (account) {
-        const [y, n, cl] = await Promise.all([c("yesStake", [id, account]), c("noStake", [id, account]), c("claimable", [id, account])]);
-        me = { y, n, cl };
-      }
-      return renderCard(id, m, statusOf(m), progress, me);
-    }));
-    $("markets").innerHTML = cards.join("");
-    $("mcount").textContent = `${count} total`;
+    for (let i = count - 1; i >= Math.max(0, count - MAX_MARKETS); i--) ids.push(BigInt(i));
+    const got = await multicall(ids.map((id) => call("getMarket", [id])));
+    const markets = ids.map((id, i) => ({ id, m: got[i], mined: null, me: null, pos: null })).filter((x) => x.m);
+
+    const started = markets.filter((x) => x.m.status === STATUS.OPEN && settledAt >= x.m.startRound);
+    const mined = await multicall(started.map((x) => call("blocksBetween", [x.m.startRound, settledAt < x.m.endRound ? settledAt : x.m.endRound])));
+    started.forEach((x, i) => (x.mined = mined[i]));
+
+    if (who) {
+      const r = await multicall(markets.flatMap((x) => [call("yesStake", [x.id, who]), call("noStake", [x.id, who]), call("claimable", [x.id, who]), call("claimed", [x.id, who])]));
+      markets.forEach((x, i) => {
+        x.me = { yes: r[4 * i] ?? 0n, no: r[4 * i + 1] ?? 0n, claimable: r[4 * i + 2] ?? 0n, claimed: r[4 * i + 3] ?? false };
+        x.pos = positionOf(x.m, x.me);
+      });
+    }
+    if (seq !== loadSeq || who !== account) return; // a newer load (or another account) superseded this one
+    Object.assign(view, { markets, loaded: true, error: "", total: count });
   } catch (e) {
-    const p = document.createElement("p");
-    p.className = "mut";
-    p.textContent = "Could not load markets: " + errMsg(e);
-    $("markets").replaceChildren(p);
+    if (seq !== loadSeq) return;
+    view.error = "Could not load markets: " + errMsg(e);
+  }
+  render();
+}
+
+// ---------- markets: view ----------
+const TAB_EMPTY = {
+  all: "No markets yet. New markets open soon. Follow the live stream!",
+  open: "No market is open for betting right now.",
+  live: "No market is running right now.",
+  settled: "No resolved market yet.",
+  refunding: "No refunded market.",
+  mine: "You have not placed any bet yet.",
+};
+
+function chipOf(x, ph, t) {
+  const m = x.m;
+  switch (ph.phase) {
+    case "resolved": return { cls: m.yesWon ? "yes" : "no", text: `${m.yesWon ? "YES" : "NO"} won · ${int(m.blocksMined)} blocks mined` };
+    case "refunding": return { cls: "", text: `Refunding${m.blocksMined ? ` · ${int(m.blocksMined)} blocks mined` : ""}` };
+    case "open": return { cls: "open", text: `Betting open · closes in ${fmtDur(ph.start - t)}` };
+    case "live": return { cls: "open", text: `Live 🐹 · ends in ${fmtDur(ph.end - t)}` };
+    case "resolvable": return { cls: "open", text: "Ended · ready to resolve" };
+    case "stalled": return { cls: "", text: "Settlement stalled · refund available" };
+    default: return { cls: "", text: "Ended · waiting for onchain settlement" };
   }
 }
 
-function renderCard(id, m, s, progress, me) {
+const POS_LABEL = { active: "Your bet", claimable: "To claim", claimed: "Claimed ✓", lost: "Lost" };
+
+function progressHtml(x) {
+  const p = progressOf(x.m, x.mined, settled, ratePerRound);
+  const stalled = x.ph.phase === "stalled";
+  const lead = stalled ? "" : p.secured ? "YES locked in" : p.leader === "yes" ? "On pace for YES" : p.leader === "no" ? (p.done >= p.total ? "NO" : "On pace for NO") : "";
+  const meta = [`${p.done}/${p.total} rounds settled`];
+  if (p.projected !== null && !p.secured) meta.push(`projected ~${int(p.projected)} blocks`);
+  return `<div class="prog">
+    <div class="prog-top"><span>Blocks mined <b>${int(p.mined)}</b> / ${int(p.target)}</span>${lead ? `<span class="lead ${p.leader}">${esc(lead)}</span>` : ""}</div>
+    <div class="pbar${p.secured ? " secured" : ""}" role="progressbar" aria-valuemin="0" aria-valuemax="${p.target}" aria-valuenow="${Math.min(p.mined, p.target)}"><i style="width:${p.pct.toFixed(1)}%"></i></div>
+    <div class="prog-meta">${esc(meta.join(" · "))}</div>
+  </div>`;
+}
+
+function quoteText(m, raw) {
+  const a = parseAmount(raw);
+  if (a === null) return "Enter an amount in SQK, e.g. 100 or 12.5.";
+  if (a < MIN_BET) return "The minimum bet is 1 SQK.";
+  const q = (yes) => {
+    const p = payoutIfWins(m, yes, a);
+    return `${sqk(p)} SQK (×${(Number((p * 1000n) / a) / 1000).toFixed(2)})`;
+  };
+  const thin = m.yesPool === 0n || m.noPool === 0n ? " Odds move as others bet; a one-sided market refunds everyone." : " Odds move as others bet.";
+  return `Payout if you win · YES: ${q(true)} · NO: ${q(false)}.${thin}`;
+}
+
+function renderCard(x, t) {
+  const { id, m, ph, pos } = x;
   const total = m.yesPool + m.noPool;
   const yesPct = total ? Number((m.yesPool * 10000n) / total) / 100 : 50;
-  const mult = (pool) => (pool ? (Number((total * 100n) / pool) / 100).toFixed(2) + "x" : "—");
-  const start = roundStartTs(m.startRound), end = roundStartTs(m.endRound + 1n);
-  const state = m.status !== 0 ? "settled" : s.open ? "open" : "live";
-  const won = m.status === 1 ? (m.yesWon ? "yes" : "no") : "";
+  const mult = (yes) => { const v = multiplier(m, yes); return v === null ? "—" : v.toFixed(2) + "x"; };
+  const won = m.status === STATUS.RESOLVED ? (m.yesWon ? "yes" : "no") : "";
+  const chip = chipOf(x, ph, t);
+  const dis = busy ? " disabled" : "";
   const side = (k, label, pct, pool, mine) => `<div class="side-box ${k}${won === k ? " won" : ""}">
       <div class="side-top"><span>${label}${won === k ? " ✓" : ""}</span><b>${pct.toFixed(0)}%</b></div>
-      <div class="side-meta">${sqk(pool)} SQK · pays ${mult(pool)}</div>
+      <div class="side-meta">${sqk(pool)} SQK · pays ${mult(k === "yes")}</div>
       ${mine ? `<div class="side-mine">Your stake: ${sqk(mine)} SQK</div>` : ""}
     </div>`;
-  let html = `<article class="m" data-state="${state}">
-    <div class="m-head"><span class="chip ${s.chip}">${s.text}</span><span class="m-id">#${id}</span></div>
-    <h3 class="q">Will the hamster mine ${m.minBlocks}+ block${m.minBlocks > 1n ? "s" : ""}?</h3>
-    <div class="m-meta">${fmtTime(start)} → ${fmtTime(end)} · pool ${sqk(total)} SQK${progress !== null ? ` · <b>${progress} block(s) settled so far</b>` : ""}</div>
-    <div class="bar"><i style="width:${yesPct}%"></i></div>
-    <div class="sides">${side("yes", "YES", yesPct, m.yesPool, me && me.y)}${side("no", "NO", 100 - yesPct, m.noPool, me && me.n)}</div>`;
+  const state = ph.phase === "open" ? "open" : ph.tab;
+  let html = `<article class="m" data-state="${state}" data-id="${id}">
+    <div class="m-head"><span class="chip ${chip.cls}">${esc(chip.text)}</span><span class="m-tags">${pos ? `<span class="pos ${pos.state}">${POS_LABEL[pos.state]}</span>` : ""}<span class="m-id">#${id}</span></span></div>
+    <h3 class="q">Will the hamster mine ${int(m.minBlocks)}+ block${m.minBlocks > 1n ? "s" : ""}?</h3>
+    <div class="m-meta">${esc(fmtTime(ph.start))} → ${esc(fmtTime(ph.end))} · pool ${sqk(total)} SQK</div>`;
+  if (["live", "settling", "resolvable", "stalled"].includes(ph.phase)) html += progressHtml(x);
+  html += `<div class="bar" aria-hidden="true"><i style="width:${yesPct}%"></i></div>
+    <div class="sides">${side("yes", "YES", yesPct, m.yesPool, x.me && x.me.yes)}${side("no", "NO", 100 - yesPct, m.noPool, x.me && x.me.no)}</div>`;
   let act = "";
-  if (s.open && trusted) act += `<div class="amt"><input type="number" step="1" min="1" value="100" id="amt${id}" aria-label="Bet amount in SQK"><span>SQK</span></div>
-      <button class="btn yes" data-act="bet" data-id="${id}" data-side="1">Bet YES</button>
-      <button class="btn no" data-act="bet" data-id="${id}" data-side="0">Bet NO</button>`;
-  if (s.resolve) act += `<button class="btn acc" data-act="resolve" data-id="${id}">Resolve market</button>`;
-  if (s.refund) act += `<button class="btn" data-act="triggerRefund" data-id="${id}">Unlock refunds</button>`;
-  if (me && me.cl > 0n) act += `<button class="btn acc" data-act="claim" data-id="${id}">Claim ${sqk(me.cl)} SQK</button>`;
+  if (ph.phase === "open" && trusted) {
+    const draft = drafts.get(String(id)) ?? "100";
+    act += `<div class="amt"><input type="text" inputmode="decimal" autocomplete="off" maxlength="32" value="${esc(draft)}" id="amt${id}" data-amt="${id}" aria-label="Bet amount in SQK"><span>SQK</span></div>
+      <button class="btn yes" data-act="bet" data-id="${id}" data-side="1"${dis}>Bet YES</button>
+      <button class="btn no" data-act="bet" data-id="${id}" data-side="0"${dis}>Bet NO</button>
+      <div class="quote" id="quote${id}" aria-live="polite">${esc(quoteText(m, draft))}</div>`;
+  }
+  if (ph.phase === "resolvable") act += `<button class="btn acc" data-act="resolve" data-id="${id}"${dis}>Resolve market</button>`;
+  if (ph.phase === "stalled") act += `<button class="btn" data-act="triggerRefund" data-id="${id}"${dis}>Unlock refunds</button>`;
+  if (pos && pos.state === "claimable") act += `<button class="btn acc" data-act="claim" data-id="${id}"${dis}>Claim ${sqk(pos.claimable)} SQK</button>`;
   if (act) html += `<div class="m-actions">${act}</div>`;
   return html + `</article>`;
+}
+
+function summaryHtml(items) {
+  const s = summarize(items.map((x) => x.pos));
+  return `<div class="summary">
+    <div><span>${s.active}</span><small>Active bets</small></div>
+    <div><span>${sqk(s.activeStake)}</span><small>SQK at stake</small></div>
+    <div><span class="${s.claimableTotal > 0n ? "hot" : ""}">${sqk(s.claimableTotal)}</span><small>SQK to claim</small></div>
+    ${s.claimableCount ? `<button class="btn acc" data-act="claimAll"${busy ? " disabled" : ""}>Claim all (${s.claimableCount})</button>` : ""}
+  </div>`;
+}
+
+function render() {
+  const t = now(), box = $("markets");
+  if (!view.loaded) {
+    if (view.error) { const p = document.createElement("p"); p.textContent = view.error; box.replaceChildren(p); }
+    return;
+  }
+  const items = view.markets.map((x) => ({ ...x, ph: phaseOf(x.m, settled, t) }));
+  const counts = Object.fromEntries(TABS.map((k) => [k, 0]));
+  for (const x of items) { counts.all++; counts[x.ph.tab]++; if (x.pos) counts.mine++; }
+  document.querySelectorAll(".tab").forEach((b) => {
+    const on = b.dataset.tab === view.tab;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", String(on));
+    b.querySelector("i").textContent = counts[b.dataset.tab] || "";
+  });
+  $("mcount").textContent = view.total ? `${view.total} total` : "";
+
+  let list = view.tab === "all" ? items : view.tab === "mine" ? items.filter((x) => x.pos) : items.filter((x) => x.ph.tab === view.tab);
+  // open markets: the one closing soonest first; everything else: newest first
+  if (view.tab === "open") list = [...list].sort((a, b) => a.ph.start - b.ph.start);
+
+  let html = view.error ? `<p class="err">${esc(view.error)}</p>` : "";
+  if (view.tab === "mine") {
+    if (!account) html += `<div class="empty"><p>Connect your wallet to see your bets and claim your winnings.</p><button class="btn primary sm" data-act="connect">Connect wallet</button></div>`;
+    else html += summaryHtml(items);
+  }
+  if (view.tab !== "mine" || account) html += list.length ? list.map((x) => renderCard(x, t)).join("") : `<p class="empty">${TAB_EMPTY[view.tab]}</p>`;
+
+  // keep the bet input the user is typing in (focus + caret) across re-renders
+  const ae = document.activeElement, focusId = ae && ae.dataset ? ae.dataset.amt : undefined;
+  const caret = focusId ? [ae.selectionStart, ae.selectionEnd] : null;
+  box.innerHTML = html;
+  if (focusId) { const el = $("amt" + focusId); if (el) { el.focus(); try { el.setSelectionRange(caret[0], caret[1]); } catch {} } }
 }
 
 // ---------- create ----------
@@ -279,7 +418,7 @@ function formRounds() {
   const startMin = Math.max(1, Number($("fStart").value) || 1);
   const hours = Math.min(168, Math.max(1, Number($("fHours").value) || 1));
   // first round that begins at least startMin minutes from now (betting closes when it begins)
-  const startRound = Math.max(roundNow() + 1, Math.ceil((now() + startMin * 60 - GENESIS) / ROUND) + 1);
+  const startRound = Math.max(roundNow(now()) + 1, Math.ceil((now() + startMin * 60 - GENESIS) / ROUND) + 1);
   return { startRound, endRound: startRound + hours * 6 - 1, hours };
 }
 function suggestLine() {
@@ -309,9 +448,9 @@ async function showApp() {
   $("addrOut").textContent = addr;
   await verifyContract();
   updateCreatePanel();
-  loadMarkets();
 }
 
+// ---------- events ----------
 $("connect").onclick = () => connect().catch((e) => toast(errMsg(e)));
 $("deploy").onclick = deploy;
 $("fStart").oninput = updatePreview;
@@ -319,27 +458,54 @@ $("fHours").oninput = suggestLine;
 $("fMin").oninput = updatePreview;
 $("create").onclick = () => {
   const { startRound, endRound } = formRounds();
-  send("createMarket", [BigInt(startRound), BigInt(endRound), BigInt(Math.max(1, Number($("fMin").value) || 1))]);
+  const min = BigInt(Math.max(1, Math.floor(Number($("fMin").value)) || 1));
+  run(async () => {
+    await tx(addr, SQUEEKBET_ABI, "createMarket", [BigInt(startRound), BigInt(endRound), min], "Market creation");
+    toast("Market created ✅");
+  });
 };
-document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => {
-  document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("on", x === t));
-  $("markets").dataset.tab = t.dataset.tab;
-}));
+$("tabs").onclick = (ev) => {
+  const b = ev.target.closest(".tab");
+  if (!b || !TABS.includes(b.dataset.tab)) return;
+  view.tab = b.dataset.tab;
+  store.set(TAB_KEY, view.tab);
+  render();
+};
+$("markets").addEventListener("input", (ev) => {
+  const inp = ev.target.closest("[data-amt]");
+  if (!inp) return;
+  drafts.set(inp.dataset.amt, inp.value);
+  const x = view.markets.find((v) => String(v.id) === inp.dataset.amt);
+  const q = $("quote" + inp.dataset.amt);
+  if (x && q) q.textContent = quoteText(x.m, inp.value);
+});
 $("markets").onclick = (ev) => {
   const b = ev.target.closest("[data-act]");
-  if (!b) return;
-  const id = BigInt(b.dataset.id), act = b.dataset.act;
+  if (!b || b.disabled) return;
+  const act = b.dataset.act;
+  if (act === "connect") return connect().catch((e) => toast(errMsg(e)));
+  if (act === "claimAll") return claimAll();
+  if (!/^\d{1,9}$/.test(b.dataset.id || "")) return;
+  const id = BigInt(b.dataset.id);
   if (act === "bet") {
-    let v;
-    try { v = parseEther(String($("amt" + b.dataset.id).value || "0")); } catch { return toast("Invalid amount."); }
-    placeBet(id, b.dataset.side === "1", v);
-  } else send(act, [id]);
+    const v = parseAmount($("amt" + b.dataset.id)?.value);
+    if (v === null) return toast("Enter an amount in SQK, e.g. 100 or 12.5.");
+    if (v < MIN_BET) return toast("The minimum bet is 1 SQK.");
+    return placeBet(id, b.dataset.side === "1", v);
+  }
+  const label = { resolve: "Resolve", triggerRefund: "Refund unlock", claim: "Claim" }[act];
+  if (label) send(act, id, label);
 };
 
-if (addr) await showApp(); else { $("createCard").classList.remove("hidden"); $("deployCard").classList.remove("hidden"); $("sideTitle").textContent = "Deploy"; }
+// ---------- boot ----------
+if (addr) await showApp();
+else { $("createCard").classList.remove("hidden"); $("deployCard").classList.remove("hidden"); $("sideTitle").textContent = "Deploy"; }
 updatePreview();
 await Promise.all([loadLive(), loadChain().catch(() => {})]);
-loadMarkets();
+await loadMarkets();
+// reconnect silently if this site was already authorized in the wallet (no prompt)
+if (window.ethereum) window.ethereum.request({ method: "eth_accounts" }).then((a) => { if (a && a[0]) connect(true).catch(() => {}); }).catch(() => {});
+
 // livestream: X Media Studio player (embeddable anywhere); ON AIR follows the stream, not the wheel sensor
 let broadcastId = "";
 function setBroadcast(id) {
@@ -374,4 +540,5 @@ setBroadcast(CFG.broadcast);
 loadBroadcast();
 setInterval(loadBroadcast, 30000);
 setInterval(loadLive, 15000);
-setInterval(async () => { await loadChain().catch(() => {}); loadMarkets(); }, 30000);
+setInterval(async () => { await loadChain().catch(() => {}); await loadMarkets(); }, 30000);
+setInterval(() => { if (!busy) render(); }, 15000); // countdowns

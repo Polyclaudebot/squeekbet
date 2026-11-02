@@ -96,9 +96,18 @@ h1 span{color:var(--blue)}
 .tab.on{color:var(--text);border-bottom-color:var(--text)}
 #markets{padding:12px;display:flex;flex-direction:column;gap:12px}
 #markets > p{margin:8px;color:var(--mut)}
-#markets[data-tab="open"] .m:not([data-state="open"]),
-#markets[data-tab="live"] .m:not([data-state="live"]),
-#markets[data-tab="settled"] .m:not([data-state="settled"]){display:none}
+.tab i{font-style:normal;margin-left:5px;color:var(--mut);font-variant-numeric:tabular-nums}
+.tab i:empty{display:none}
+.empty{text-align:center;color:var(--mut);padding:24px 12px;margin:0}
+.empty p{margin:0 0 12px}
+#markets .err{color:#861d12}
+.busy #markets [data-act],.busy #create{opacity:.45;pointer-events:none}
+
+/* my bets summary */
+.summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:12px;align-items:center;background:var(--led-bg);border-radius:10px;padding:16px 20px;font-family:var(--dots);font-weight:900;text-transform:uppercase}
+.summary span{display:block;font-size:26px;line-height:1.1;color:var(--led-cream);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.summary span.hot{color:var(--led-amber);text-shadow:0 0 10px rgba(247,185,65,.4)}
+.summary small{font-family:var(--mono);font-weight:500;font-size:10px;letter-spacing:.18em;color:var(--led-dim)}
 
 /* market card */
 .m{background:var(--card-2);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
@@ -108,6 +117,21 @@ h1 span{color:var(--blue)}
 .chip.yes{color:var(--yes);background:var(--yes-soft)}.chip.no{color:var(--no);background:var(--no-soft)}
 .chip:not(.open):not(.yes):not(.no){color:var(--mut);background:#efeff3}
 .m-id{font-size:11px;color:var(--mut);letter-spacing:.1em}
+.m-tags{display:flex;align-items:center;gap:8px}
+.pos{font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;padding:4px 8px;border-radius:4px;background:#efeff3;color:var(--text-2);white-space:nowrap}
+.pos.active{background:var(--yes-soft);color:var(--yes)}
+.pos.claimable{background:var(--amber);color:#fff}
+.pos.claimed{background:#e4f4ea;color:#1d7a43}
+.prog{margin:14px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+.prog-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:12px;color:var(--text-2)}
+.prog-top b{color:var(--text);font-weight:600}
+.lead{font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;white-space:nowrap}
+.lead.yes{color:var(--yes)}.lead.no{color:var(--no)}
+.pbar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin:8px 0 6px}
+.pbar i{display:block;height:100%;background:var(--amber);transition:width .4s}
+.pbar.secured i{background:var(--yes)}
+.prog-meta{font-size:11px;color:var(--mut)}
+.quote{flex-basis:100%;font-size:11px;color:var(--text-2);line-height:1.5}
 .q{font-family:var(--cond);font-weight:700;font-size:26px;line-height:1.05;text-transform:uppercase;margin:12px 0 4px}
 .m-meta{font-size:12px;color:var(--mut)}
 .m-meta b{color:var(--text);font-weight:600}
@@ -151,7 +175,7 @@ code{font-size:11px;word-break:break-all;color:var(--text-2)}
 #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--led-bg);color:var(--led-cream);font:12px var(--mono);letter-spacing:.06em;padding:12px 18px;border-radius:8px;display:none;max-width:92vw;z-index:9;box-shadow:0 8px 28px rgba(0,0,0,.28)}
 
 @media (max-width:980px){
-  .hero,.main{grid-template-columns:1fr}
+  .hero,.main{grid-template-columns:minmax(0,1fr)}
   .nav-links{display:none}
 }
 @media (max-width:560px){
@@ -162,6 +186,9 @@ code{font-size:11px;word-break:break-all;color:var(--text-2)}
   .led-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
   .m{padding:16px}
   .m-actions .btn{flex:1}
+  .summary{grid-template-columns:repeat(2,minmax(0,1fr));padding:14px 16px}
+  .summary .btn{grid-column:1/-1}
+  .m-head{flex-wrap:wrap}
 }
 </style>
 </head>
@@ -222,11 +249,13 @@ code{font-size:11px;word-break:break-all;color:var(--text-2)}
   <div class="main">
     <section class="card" id="markets-panel">
       <div class="panel-head"><span class="label">Markets</span><span class="m-id" id="mcount"></span></div>
-      <div class="tabs" role="tablist">
-        <button class="tab on" data-tab="all">All</button>
-        <button class="tab" data-tab="open">Open</button>
-        <button class="tab" data-tab="live">Live</button>
-        <button class="tab" data-tab="settled">Settled</button>
+      <div class="tabs" role="tablist" id="tabs" aria-label="Filter markets">
+        <button class="tab on" role="tab" aria-selected="true" data-tab="all">All<i></i></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="open">Open<i></i></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="live">Live<i></i></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="settled">Resolved<i></i></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="refunding">Refunds<i></i></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="mine">My bets<i></i></button>
       </div>
       <div id="app" class="hidden"></div>
       <div id="markets" data-tab="all"><p>Loading…</p></div>
